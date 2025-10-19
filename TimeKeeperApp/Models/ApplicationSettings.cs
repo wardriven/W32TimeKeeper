@@ -8,8 +8,12 @@ public class ApplicationSettings
 
     public int DriftAllowanceMilliseconds { get; set; } = 1000;
 
+    public int SyncIntervalSeconds { get; set; } = 300;
+
     public bool AutoStartWithWindows { get; set; }
         = false;
 
     public bool NotificationsEnabled { get; set; } = true;
+
+    public bool AdjustmentNotificationsEnabled { get; set; } = true;
 }

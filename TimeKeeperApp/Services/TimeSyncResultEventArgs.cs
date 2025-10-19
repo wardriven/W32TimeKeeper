@@ -23,7 +23,7 @@ public class TimeSyncResultEventArgs : EventArgs
 
     public string? Server { get; }
 
-    public static TimeSyncResultEventArgs Success(double driftMilliseconds, bool adjusted, string? server)
+    public static TimeSyncResultEventArgs CreateSuccess(double driftMilliseconds, bool adjusted, string? server)
         => new(true, adjusted ? "System time adjusted." : "System time within drift allowance.", driftMilliseconds, adjusted, server);
 
     public static TimeSyncResultEventArgs Fail(string message)

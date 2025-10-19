@@ -10,27 +10,34 @@ public class TimeSyncService : IDisposable
 {
     private readonly Func<ApplicationSettings> _settingsProvider;
     private readonly SystemTimeAdjuster _systemTimeAdjuster;
-    private readonly Timer _timer;
-    private readonly object _syncLock = new();
+    private readonly System.Threading.Timer _timer;
+    private readonly SemaphoreSlim _syncSemaphore = new(1, 1);
     private bool _disposed;
 
     public TimeSyncService(Func<ApplicationSettings> settingsProvider, SystemTimeAdjuster systemTimeAdjuster)
     {
         _settingsProvider = settingsProvider;
         _systemTimeAdjuster = systemTimeAdjuster;
-        _timer = new Timer(OnTimerElapsed, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _timer = new System.Threading.Timer(OnTimerElapsed, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
     public event EventHandler<TimeSyncResultEventArgs>? SyncResult;
 
     public void Start()
     {
-        _timer.Change(TimeSpan.Zero, TimeSpan.FromMinutes(5));
+        var interval = GetInterval();
+        _timer.Change(TimeSpan.Zero, interval);
     }
 
     public void Stop()
     {
         _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+    }
+
+    public void UpdateInterval()
+    {
+        var interval = GetInterval();
+        _timer.Change(TimeSpan.Zero, interval);
     }
 
     private void OnTimerElapsed(object? state)
@@ -40,11 +47,7 @@ public class TimeSyncService : IDisposable
 
     public async Task PerformSyncAsync()
     {
-        if (!Monitor.TryEnter(_syncLock))
-        {
-            return;
-        }
-
+        await _syncSemaphore.WaitAsync();
         try
         {
             var settings = _settingsProvider();
@@ -79,14 +82,14 @@ public class TimeSyncService : IDisposable
 
             if (driftAbs <= allowance)
             {
-                SyncResult?.Invoke(this, TimeSyncResultEventArgs.Success(drift, false, serverUsed));
+                SyncResult?.Invoke(this, TimeSyncResultEventArgs.CreateSuccess(drift, false, serverUsed));
                 return;
             }
 
             var adjusted = _systemTimeAdjuster.TryApply(networkTime.Value, out var errorMessage);
             if (adjusted)
             {
-                SyncResult?.Invoke(this, TimeSyncResultEventArgs.Success(drift, true, serverUsed));
+                SyncResult?.Invoke(this, TimeSyncResultEventArgs.CreateSuccess(drift, true, serverUsed));
             }
             else
             {
@@ -99,7 +102,7 @@ public class TimeSyncService : IDisposable
         }
         finally
         {
-            Monitor.Exit(_syncLock);
+            _syncSemaphore.Release();
         }
     }
 
@@ -112,5 +115,17 @@ public class TimeSyncService : IDisposable
 
         _timer.Dispose();
         _disposed = true;
+    }
+
+    private TimeSpan GetInterval()
+    {
+        var settings = _settingsProvider();
+        var seconds = settings.SyncIntervalSeconds;
+        if (seconds <= 0)
+        {
+            seconds = 300;
+        }
+
+        return TimeSpan.FromSeconds(seconds);
     }
 }
