@@ -7,4 +7,15 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
+  <ItemGroup>
+    <None Remove="8f35f377-8ded-43fe-9a67-c68bbcde13f1-removebg-preview.png" />
+    <None Remove="8f35f377-8ded-43fe-9a67-c68bbcde13f1.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="8f35f377-8ded-43fe-9a67-c68bbcde13f1-removebg-preview.png" />
+    <Resource Include="8f35f377-8ded-43fe-9a67-c68bbcde13f1.png" />
+  </ItemGroup>
 </Project>

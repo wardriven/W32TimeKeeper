@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Forms;
 using System.Windows.Threading;
+using System.ServiceProcess;
 using TimeKeeperApp.Models;
 using TimeKeeperApp.Services;
 using MessageBox = System.Windows.MessageBox;
@@ -15,6 +16,7 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService = new();
     private readonly AutoStartService _autoStartService = new();
     private readonly SystemTimeAdjuster _systemTimeAdjuster = new();
+    private readonly ThemeService _themeService;
     private readonly NotifyIcon _notifyIcon;
     private ApplicationSettings _settings;
     private readonly TimeSyncService _timeSyncService;
@@ -25,9 +27,12 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        _settings = _settingsService.Load();
+        _themeService = new ThemeService(System.Windows.Application.Current);
+        _themeService.ApplyTheme(_settings.ThemePreference);
+
         InitializeComponent();
 
-        _settings = _settingsService.Load();
         _timeSyncService = new TimeSyncService(() => _settings, _systemTimeAdjuster);
         _timeSyncService.SyncResult += OnSyncResult;
 
@@ -64,6 +69,7 @@ public partial class MainWindow : Window
             StatusTextBlock.Text = $"Unable to query auto-start setting: {ex.Message}";
         }
 
+        CheckWindowsTimeService();
         TimerStatusTextBlock.Text = "Monitoring active - no checks yet";
         _statusTimer.Start();
         _timeSyncService.Start();
@@ -122,7 +128,7 @@ public partial class MainWindow : Window
     private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
         var wasMonitoring = _isMonitoringActive;
-        var settingsWindow = new SettingsWindow(_settings, _settingsService, _autoStartService, _timeSyncService)
+        var settingsWindow = new SettingsWindow(_settings, _settingsService, _autoStartService, _timeSyncService, _themeService)
         {
             Owner = this
         };
@@ -144,6 +150,34 @@ public partial class MainWindow : Window
 
             UpdateToggleSyncButton();
             UpdateTimerStatusText();
+        }
+    }
+
+    private void CheckWindowsTimeService()
+    {
+        try
+        {
+            using var controller = new ServiceController("w32time");
+            if (controller.Status == ServiceControllerStatus.Running)
+            {
+                MessageBox.Show(this,
+                    "The Windows Time (w32time) service is currently running. Disable or stop it to prevent conflicts with W32 Time Keeper.",
+                    "Windows Time Service Running",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        catch (Win32Exception)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            StatusTextBlock.Text = $"Unable to query Windows Time service: {ex.Message}";
         }
     }
 
@@ -237,6 +271,7 @@ public partial class MainWindow : Window
         _statusTimer.Stop();
         _timeSyncService.Stop();
         _timeSyncService.Dispose();
+        _themeService.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _isMonitoringActive = false;
