@@ -1,322 +1,90 @@
-using System;
 using System.ComponentModel;
 using System.Linq;
 using System.Windows;
-using System.Windows.Forms;
-using System.Windows.Threading;
-using System.ServiceProcess;
-using TimeKeeperApp.Models;
-using TimeKeeperApp.Services;
-using MessageBox = System.Windows.MessageBox;
+using System.Windows.Input;
+using TimeKeeperApp.ViewModels;
 
 namespace TimeKeeperApp;
 
 public partial class MainWindow : Window
 {
-    private readonly SettingsService _settingsService = new();
-    private readonly AutoStartService _autoStartService = new();
-    private readonly SystemTimeAdjuster _systemTimeAdjuster = new();
-    private readonly ThemeService _themeService;
-    private readonly NotifyIcon _notifyIcon;
-    private ApplicationSettings _settings;
-    private readonly TimeSyncService _timeSyncService;
-    private bool _balloonShownOnce;
-    private readonly DispatcherTimer _statusTimer;
-    private DateTime? _lastCheckTime;
-    private bool _isMonitoringActive;
+    private readonly MainViewModel _viewModel;
 
     public MainWindow()
     {
-        _settings = _settingsService.Load();
-        _themeService = new ThemeService(System.Windows.Application.Current);
-        _themeService.ApplyTheme(_settings.ThemePreference);
-
         InitializeComponent();
-
-        _timeSyncService = new TimeSyncService(() => _settings, _systemTimeAdjuster);
-        _timeSyncService.SyncResult += OnSyncResult;
-
-        _notifyIcon = new NotifyIcon
-        {
-            Visible = false,
-            Icon = System.Drawing.SystemIcons.Application,
-            Text = "W32 Time Keeper"
-        };
-        _notifyIcon.DoubleClick += (_, _) => RestoreFromTray();
-
-        Loaded += OnLoaded;
-        Closing += OnClosing;
-        StateChanged += OnStateChanged;
-
-        _statusTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(1)
-        };
-        _statusTimer.Tick += (_, _) => UpdateTimerStatusText();
+        _viewModel = (MainViewModel)DataContext;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        RefreshServerList();
-
-        try
+        await _viewModel.InitializeAsync();
+        if (_viewModel.CanStart)
         {
-            var autoStartEnabled = _autoStartService.IsEnabled();
-            _settings.AutoStartWithWindows = autoStartEnabled;
+            await _viewModel.StartAsync();
         }
-        catch (Exception ex)
-        {
-            StatusTextBlock.Text = $"Unable to query auto-start setting: {ex.Message}";
-        }
-
-        CheckWindowsTimeService();
-        TimerStatusTextBlock.Text = "Monitoring active - no checks yet";
-        _statusTimer.Start();
-        _timeSyncService.Start();
-        _isMonitoringActive = true;
-        UpdateToggleSyncButton();
-        UpdateTimerStatusText();
     }
 
-    private void RefreshServerList()
+    private async void OnStartChecks(object sender, RoutedEventArgs e)
     {
-        ServersListBox.ItemsSource = null;
-        ServersListBox.ItemsSource = _settings.TimeServers;
+        await _viewModel.StartAsync();
     }
 
-    private async void OnSyncResult(object? sender, TimeSyncResultEventArgs e)
+    private void OnStopChecks(object sender, RoutedEventArgs e)
     {
-        await Dispatcher.InvokeAsync(() =>
-        {
-            if (e.Success)
-            {
-                var drift = Math.Round(e.DriftMilliseconds, 2);
-                var serverDetails = string.IsNullOrWhiteSpace(e.Server) ? string.Empty : $" (server: {e.Server})";
-                LastSyncTextBlock.Text = $"Last sync: {DateTime.Now:G} | Drift: {drift} ms{serverDetails}";
-
-                if (e.TimeAdjusted && _settings.AdjustmentNotificationsEnabled)
-                {
-                    ShowNotification($"System time adjusted by {Math.Round(e.DriftMilliseconds)} ms.");
-                }
-            }
-            else
-            {
-                LastSyncTextBlock.Text = $"Last sync attempt: {DateTime.Now:G} | {e.Message}";
-                ShowNotification(e.Message, ToolTipIcon.Warning);
-            }
-
-            StatusTextBlock.Text = e.Message;
-            _lastCheckTime = DateTime.Now;
-            UpdateTimerStatusText();
-        });
+        _viewModel.Stop();
     }
 
-    private void ShowNotification(string message, ToolTipIcon icon = ToolTipIcon.Info)
+    private void OnIntervalPreviewTextInput(object sender, TextCompositionEventArgs e)
     {
-        if (!_settings.NotificationsEnabled)
+        e.Handled = !IsNumeric(e.Text);
+    }
+
+    private void OnIntervalPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!e.DataObject.GetDataPresent(DataFormats.Text))
         {
+            e.CancelCommand();
             return;
         }
 
-        _notifyIcon.BalloonTipTitle = "W32 Time Keeper";
-        _notifyIcon.BalloonTipText = message;
-        _notifyIcon.BalloonTipIcon = icon;
-        _notifyIcon.Visible = true;
-        _notifyIcon.ShowBalloonTip(5000);
-    }
-
-    private void OnOpenSettings(object sender, RoutedEventArgs e)
-    {
-        var wasMonitoring = _isMonitoringActive;
-        var settingsWindow = new SettingsWindow(_settings, _settingsService, _autoStartService, _timeSyncService, _themeService)
+        if (e.DataObject.GetData(DataFormats.Text) is string text && !IsNumeric(text))
         {
-            Owner = this
-        };
-
-        var result = settingsWindow.ShowDialog();
-        if (result == true)
-        {
-            StatusTextBlock.Text = settingsWindow.StatusMessage ?? "Settings saved.";
-            if (wasMonitoring)
-            {
-                _timeSyncService.UpdateInterval();
-                _isMonitoringActive = true;
-            }
-            else
-            {
-                _timeSyncService.Stop();
-                _isMonitoringActive = false;
-            }
-
-            UpdateToggleSyncButton();
-            UpdateTimerStatusText();
+            e.CancelCommand();
         }
     }
 
-    private void CheckWindowsTimeService()
+    private void OnServerPreviewTextInput(object sender, TextCompositionEventArgs e)
     {
-        try
-        {
-            using var controller = new ServiceController("w32time");
-            if (controller.Status == ServiceControllerStatus.Running)
-            {
-                MessageBox.Show(this,
-                    "The Windows Time (w32time) service is currently running. Disable or stop it to prevent conflicts with W32 Time Keeper.",
-                    "Windows Time Service Running",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
-        catch (Win32Exception)
-        {
-            return;
-        }
-        catch (Exception ex)
-        {
-            StatusTextBlock.Text = $"Unable to query Windows Time service: {ex.Message}";
-        }
+        e.Handled = !IsHostnameText(e.Text);
     }
 
-    private void OnAddServer(object sender, RoutedEventArgs e)
+    private void OnServerPaste(object sender, DataObjectPastingEventArgs e)
     {
-        var newServer = NewServerTextBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(newServer))
+        if (!e.DataObject.GetDataPresent(DataFormats.Text))
         {
+            e.CancelCommand();
             return;
         }
 
-        if (_settings.TimeServers.Any(s => string.Equals(s, newServer, StringComparison.OrdinalIgnoreCase)))
+        if (e.DataObject.GetData(DataFormats.Text) is string text && !IsHostnameText(text))
         {
-            MessageBox.Show(this, "This server is already in the list.", "Duplicate", MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        _settings.TimeServers.Add(newServer);
-        RefreshServerList();
-        NewServerTextBox.Clear();
-        _settingsService.Save(_settings);
-    }
-
-    private void OnRemoveServer(object sender, RoutedEventArgs e)
-    {
-        if (ServersListBox.SelectedItem is not string server)
-        {
-            return;
-        }
-
-        _settings.TimeServers.Remove(server);
-        RefreshServerList();
-        _settingsService.Save(_settings);
-    }
-
-    private async void OnSyncNow(object sender, RoutedEventArgs e)
-    {
-        StatusTextBlock.Text = "Performing manual sync...";
-        await _timeSyncService.PerformSyncAsync();
-    }
-
-    private void OnToggleSyncMonitoring(object sender, RoutedEventArgs e)
-    {
-        if (_isMonitoringActive)
-        {
-            _timeSyncService.Stop();
-            _isMonitoringActive = false;
-            _lastCheckTime = null;
-            StatusTextBlock.Text = "Monitoring stopped.";
-        }
-        else
-        {
-            _timeSyncService.Start();
-            _isMonitoringActive = true;
-            _lastCheckTime = null;
-            StatusTextBlock.Text = "Monitoring started.";
-        }
-
-        UpdateToggleSyncButton();
-        UpdateTimerStatusText();
-    }
-
-    private void OnStateChanged(object? sender, EventArgs e)
-    {
-        if (WindowState == WindowState.Minimized)
-        {
-            Hide();
-            _notifyIcon.Visible = true;
-            if (!_balloonShownOnce)
-            {
-                ShowNotification("Time Keeper continues to run in the background.");
-                _balloonShownOnce = true;
-            }
-        }
-        else if (WindowState == WindowState.Normal)
-        {
-            _notifyIcon.Visible = false;
+            e.CancelCommand();
         }
     }
 
-    private void RestoreFromTray()
+    private static bool IsNumeric(string? text)
     {
-        Show();
-        WindowState = WindowState.Normal;
-        Activate();
+        return !string.IsNullOrEmpty(text) && text.All(char.IsDigit);
+    }
+
+    private static bool IsHostnameText(string? text)
+    {
+        return !string.IsNullOrEmpty(text) && text.All(c => char.IsLetterOrDigit(c) || c is '-' or '.');
     }
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        _statusTimer.Stop();
-        _timeSyncService.Stop();
-        _timeSyncService.Dispose();
-        _themeService.Dispose();
-        _notifyIcon.Visible = false;
-        _notifyIcon.Dispose();
-        _isMonitoringActive = false;
+        _viewModel.Dispose();
     }
-
-    private void UpdateToggleSyncButton()
-    {
-        if (!IsLoaded || ToggleSyncButton is null)
-        {
-            return;
-        }
-
-        ToggleSyncButton.Content = _isMonitoringActive ? "Stop Sync" : "Start Sync";
-    }
-
-    private void UpdateTimerStatusText()
-    {
-        if (!IsLoaded)
-        {
-            return;
-        }
-
-        if (!_isMonitoringActive)
-        {
-            TimerStatusTextBlock.Text = "Monitoring stopped";
-            return;
-        }
-
-        if (_lastCheckTime is null)
-        {
-            TimerStatusTextBlock.Text = "Monitoring active - no checks yet";
-            return;
-        }
-
-        var elapsed = DateTime.Now - _lastCheckTime.Value;
-        if (elapsed < TimeSpan.Zero)
-        {
-            elapsed = TimeSpan.Zero;
-        }
-
-        var formatted = elapsed.TotalHours >= 1
-            ? elapsed.ToString(@"hh\:mm\:ss")
-            : elapsed.ToString(@"mm\:ss");
-
-        TimerStatusTextBlock.Text = $"Monitoring active - last check {formatted} ago";
-    }
-
 }
