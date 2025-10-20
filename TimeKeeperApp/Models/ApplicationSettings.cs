@@ -16,4 +16,6 @@ public class ApplicationSettings
     public bool NotificationsEnabled { get; set; } = true;
 
     public bool AdjustmentNotificationsEnabled { get; set; } = true;
+
+    public ThemePreference ThemePreference { get; set; } = ThemePreference.System;
 }
